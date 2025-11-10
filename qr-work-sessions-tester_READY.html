@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>QR Work Sessions — Тестер</title>
+<link rel="preconnect" href="https://unpkg.com">
+<style>
+  :root{--bg:#0b1020;--card:#121a33;--muted:#7e86a3;--accent:#4ea1ff;}
+  html,body{margin:0;height:100%;}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:#fff;display:flex;justify-content:center}
+  .wrap{width:100%;max-width:720px;padding:16px 14px 40px;box-sizing:border-box}
+  h1{font-size:20px;margin:10px 0 14px}
+  .card{background:var(--card);border-radius:16px;padding:14px;margin-bottom:12px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+  label{font-size:12px;color:var(--muted);display:block;margin:8px 0 6px}
+  input,select{width:100%;padding:12px 12px;border-radius:12px;border:1px solid #223055;background:#0f1730;color:#fff;box-sizing:border-box}
+  button{background:var(--accent);color:#001428;border:0;border-radius:12px;padding:12px 16px;font-weight:600}
+  button.secondary{background:#223055;color:#cfe4ff}
+  button.block{width:100%}
+  .row{display:flex;gap:8px}
+  .row>*{flex:1}
+  .muted{color:var(--muted);font-size:12px}
+  .ok{color:#8ef0a7}
+  .err{color:#ff9f9f}
+  .video{width:100%;border-radius:14px;background:#000;min-height:220px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;background:#20355c;color:#b7d4ff}
+  .list .item{border-top:1px solid #1e2744;padding:10px 0}
+  .hint{font-size:12px;margin-top:6px;color:#b3c2e6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>QR Work Sessions — тестер</h1>
+
+  <div class="card">
+    <label>Адрес сервера (Render)</label>
+    <input id="apiBase" placeholder="https://your-service.onrender.com">
+    <div class="row" style="margin-top:8px">
+      <button id="saveBase">Сохранить</button>
+      <button class="secondary" id="ping">Проверить</button>
+    </div>
+    <div id="baseMsg" class="muted"></div>
+  </div>
+
+  <div class="card" id="loginCard">
+    <div class="row">
+      <div><label>Email</label><input id="email" value="admin@example.com"></div>
+      <div><label>Пароль</label><input id="password" type="password" value="password"></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="loginBtn">Войти (админ/пользователь)</button>
+      <button class="secondary" id="logoutBtn">Выйти</button>
+    </div>
+    <div id="authMsg" class="muted"></div>
+  </div>
+
+  <div class="card" id="scanCard" style="display:none">
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <div><span class="badge" id="meBadge">не авторизован</span></div>
+      <div><button class="secondary" id="refreshSessions">Обновить список</button></div>
+    </div>
+    <label style="margin-top:10px">Сканер QR (камера)</label>
+    <video id="video" class="video" playsinline></video>
+    <div class="row" style="margin-top:8px">
+      <button id="startCam">Включить камеру</button>
+      <button class="secondary" id="stopCam">Выключить</button>
+    </div>
+
+    <label style="margin-top:12px">Или введите QR вручную (например: <code>VEH:А123ВС77</code>)</label>
+    <div class="row">
+      <input id="manualQr" placeholder="VEH:А123ВС77">
+      <button id="sendManual">Отправить</button>
+    </div>
+
+    <div class="row" style="margin-top:8px">
+      <button class="secondary" id="syncBtn">Синхронизировать офлайн</button>
+      <button class="secondary" id="clearQueue">Очистить очередь</button>
+    </div>
+    <div id="scanMsg" class="muted"></div>
+  </div>
+
+  <div class="card" id="sessionsCard" style="display:none">
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <div><b>Мои смены</b></div>
+      <div class="muted" id="pendingCount"></div>
+    </div>
+    <div class="list" id="list"></div>
+  </div>
+
+  <div class="card">
+    <div class="muted">
+      Подсказки:<br>
+      • Если камера не запускается из файла, загрузите этот HTML на любой хостинг (GitHub Pages / Vercel) — браузер потребует HTTPS.<br>
+      • Без камеры можно вводить QR вручную в поле выше.<br>
+      • Офлайн: если нет сети — запрос попадёт в «очередь». Нажмите «Синхронизировать офлайн», когда интернет появится.
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/@zxing/library@latest"></script>
+<script>
+const $ = (id)=>document.getElementById(id);
+const state = {
+  apiBase: localStorage.getItem('api_base')||'',
+  token: localStorage.getItem('token')||'',
+  me: null,
+  queue: JSON.parse(localStorage.getItem('pending_events_v1')||'[]'),
+  codeReader: null,
+  stream: null,
+};
+
+function setMsg(el, text, ok=false, err=false){
+  el.textContent = text || '';
+  el.className = 'muted' + (ok?' ok':'') + (err?' err':'');
+}
+
+function saveQueue(){
+  localStorage.setItem('pending_events_v1', JSON.stringify(state.queue));
+  $('pendingCount').textContent = state.queue.length ? ('В очереди: '+state.queue.length) : '';
+}
+
+function uuid(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {const r = Math.random()*16|0, v=c==='x'?r:(r&0x3|0x8);return v.toString(16);});}
+
+async function api(path, opts={}){
+  const headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
+  if(state.token) headers['Authorization'] = 'Bearer '+state.token;
+  const res = await fetch((state.apiBase||'')+path, Object.assign({}, opts, {headers}));
+  if(!res.ok){
+    const text = await res.text();
+    throw new Error('HTTP '+res.status+': '+text);
+  }
+  const ct = res.headers.get('content-type')||'';
+  return ct.includes('application/json') ? res.json() : null;
+}
+
+async function ping(){
+  try{
+    const data = await api('/me');
+    setMsg($('baseMsg'), 'OK: '+JSON.stringify(data), true);
+  }catch(e){ setMsg($('baseMsg'), 'Не удалось подключиться: '+e.message, false, true); }
+}
+
+async function login(){
+  try{
+    const email = $('email').value.trim();
+    const password = $('password').value;
+    const data = await api('/auth/login', {method:'POST', body: JSON.stringify({ email, password })});
+    state.token = data.access_token;
+    localStorage.setItem('token', state.token);
+    setMsg($('authMsg'), 'Успешный вход', true);
+    await whoAmI();
+    $('scanCard').style.display='block';
+    $('sessionsCard').style.display='block';
+    await loadSessions();
+  }catch(e){ setMsg($('authMsg'), e.message, false, true); }
+}
+
+async function whoAmI(){
+  try{
+    const me = await api('/me');
+    state.me = me;
+    $('meBadge').textContent = me.email+' ('+me.role+')';
+  }catch(e){ $('meBadge').textContent = 'не авторизован'; }
+}
+
+function logout(){
+  state.token = '';
+  localStorage.removeItem('token');
+  $('meBadge').textContent = 'не авторизован';
+  setMsg($('authMsg'), 'Вы вышли');
+}
+
+async function getCoords(){
+  return new Promise(resolve=>{
+    if(!navigator.geolocation) return resolve({});
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      _ => resolve({}), { enableHighAccuracy:true, timeout:3000 }
+    );
+  });
+}
+
+async function sendScan(qr_payload){
+  const coords = await getCoords();
+  const body = { qr_payload, ...coords, device_ts: new Date().toISOString() };
+  const idk = uuid();
+  try{
+    const res = await api('/sessions/scan', {method:'POST', body: JSON.stringify(body), headers:{'Idempotency-Key': idk}});
+    setMsg($('scanMsg'), 'OK: сессия '+res.status+' ('+(res.work_minutes??'—')+' мин.)', true);
+    await loadSessions();
+  }catch(e){
+    // сеть/сервер — отправим позже
+    if(!navigator.onLine || String(e).includes('Failed to fetch') || (e.message && e.message.startsWith('HTTP 5'))){
+      state.queue.push({ id: uuid(), idempotency_key: idk, body });
+      saveQueue();
+      setMsg($('scanMsg'), 'Сохранено офлайн. Будет отправлено при синхронизации.', true);
+    }else{
+      try{
+        const j = JSON.parse(e.message.replace(/^HTTP \\d+:\\s*/,''));
+        if (j && j.detail && j.detail.code==='VEHICLE_BUSY'){
+          const holder = j.detail.holder?.full_name || j.detail.holder?.user_id || 'другой пользователь';
+          setMsg($('scanMsg'), 'ТС уже занято ('+holder+').', false, true);
+          return;
+        }
+      }catch(_){}
+      setMsg($('scanMsg'), e.message, false, true);
+    }
+  }
+}
+
+async function syncQueue(){
+  if(!state.queue.length){ setMsg($('scanMsg'),'Очередь пуста'); return; }
+  const rest=[];
+  for(const ev of state.queue){
+    try{
+      await api('/sessions/scan', {method:'POST', body: JSON.stringify(ev.body), headers:{'Idempotency-Key': ev.idempotency_key}});
+    }catch(e){
+      if(!navigator.onLine || String(e).includes('Failed to fetch')) rest.push(ev);
+    }
+  }
+  state.queue = rest;
+  saveQueue();
+  await loadSessions();
+  setMsg($('scanMsg'), rest.length? ('Не всё отправилось. Осталось: '+rest.length) : 'Очередь синхронизирована', !rest.length, !!rest.length);
+}
+
+async function loadSessions(){
+  try{
+    const data = await api('/me/sessions');
+    const list = data.items||[];
+    const el = $('list');
+    el.innerHTML='';
+    list.slice(0,30).forEach(it=>{
+      const d = document.createElement('div');
+      d.className='item';
+      d.innerHTML = `
+        <div><b>${it.status.toUpperCase()}</b> · минут: ${it.work_minutes ?? '—'}</div>
+        <div class="muted">Старт: ${it.started_at ?? '—'} (${it.started_city ?? '—'})</div>
+        <div class="muted">Финиш: ${it.ended_at ?? '—'} (${it.ended_city ?? '—'})</div>
+      `;
+      el.appendChild(d);
+    });
+  }catch(e){
+    setMsg($('scanMsg'), 'Не удалось загрузить список: '+e.message, false, true);
+  }
+}
+
+async function startCamera(){
+  try{
+    if(state.stream){ return; }
+    const video = $('video');
+    const constraints = { video: { facingMode: 'environment' } };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    state.stream = stream;
+    video.srcObject = stream; await video.play();
+    setMsg($('scanMsg'), 'Камера запущена. Наведите на QR-код.');
+    const codeReader = new ZXing.BrowserMultiFormatReader();
+    state.codeReader = codeReader;
+    codeReader.decodeFromVideoDevice(null, 'video', (result,err)=>{
+      if(result){
+        stopCamera();
+        sendScan(String(result.getText()));
+      }
+    });
+  }catch(e){
+    setMsg($('scanMsg'), 'Камера не доступна. Используйте ввод вручную или откройте через HTTPS.', false, true);
+  }
+}
+function stopCamera(){
+  if(state.codeReader){ try{ state.codeReader.reset(); }catch(_){} state.codeReader=null; }
+  if(state.stream){ state.stream.getTracks().forEach(t=>t.stop()); state.stream=null; }
+}
+function clearQueue(){ state.queue=[]; saveQueue(); setMsg($('scanMsg'),'Очередь очищена'); }
+
+// Init
+$('apiBase').value = state.apiBase;
+$('saveBase').onclick = ()=>{ state.apiBase = $('apiBase').value.trim(); localStorage.setItem('api_base', state.apiBase); setMsg($('baseMsg'),'Адрес сохранён: '+state.apiBase, true); };
+$('ping').onclick = ping;
+$('loginBtn').onclick = login;
+$('logoutBtn').onclick = logout;
+$('startCam').onclick = startCamera;
+$('stopCam').onclick = stopCamera;
+$('sendManual').onclick = ()=>{ const v=$('manualQr').value.trim(); if(v) sendScan(v); };
+$('syncBtn').onclick = syncQueue;
+$('clearQueue').onclick = clearQueue;
+$('refreshSessions').onclick = loadSessions;
+
+if(state.token){ $('scanCard').style.display='block'; $('sessionsCard').style.display='block'; whoAmI(); loadSessions(); }
+saveQueue();
+</script>
+
+<!-- Injected by assistant: preset API base for Render -->
+<script>
+  (function(){
+    const API = "https://qr-work-sessions-api.onrender.com";
+    try {
+      localStorage.setItem('api_base', API);
+    } catch (e) {}
+    window.addEventListener('DOMContentLoaded', function(){
+      var el = document.getElementById('apiBase');
+      if (el) el.value = API;
+    });
+  })();
+</script>
+
+</body>
+</html>
